@@ -99,7 +99,7 @@ function DisplayScene:create()
 		self:insert(self.text[i]:getView()) 													-- put them in the scene view
 		if i > 1 then self.text[i]:setModifier(self.modifier) end 								-- set the modifier for the 2nd and 3rd text object
 	end
-	self.text[3]:animate(4) 																	-- but only animate the 3rd - so we have, normal, shaped, animated.
+	self.text[3]:animate(3) 																	-- but only animate the 3rd - so we have, normal, shaped, animated.
 end
 
 --//	We use the slideleft transition type into this scene
