@@ -206,7 +206,7 @@ end
 --//%		Destructor, not called by lua, but used by clear screen method - tidies up bitmap font and frees all resources, so ClearScreen can be used
 --//		on scene exit event or similar.
 
-function BitmapString:destroy()
+function BitmapString:_destroy()
 	self:setText("") 																		-- this deletes all the display objects.
 	for eventName,handler in pairs(self.eventListeners) do 									-- remove all event listeners that are installed.
 		self.viewGroup:removeEventListener(eventName,handler)
@@ -503,7 +503,7 @@ end
 
 function FontManager:initialise()
 	self.fontList = {} 																		-- maps font name (l/c) to bitmap object
-	self.currentStrings = {} 																-- list of current strings.
+	self.currentStrings = {} 																-- list of current strings (contains reference as key)
 	self.eventListenerAttached = false 														-- enter Frame is not attached.
 	self.animationsPerSecond = 15 															-- animation rate hertz
 	self.nextAnimation = 0 																	-- time of next animation
@@ -514,8 +514,8 @@ end
 --//	Erase all text - clear screen effectively. All new text strings are registered with the font mananger.
 
 function FontManager:clearText()
-	for _,string in ipairs(self.currentStrings) do 											-- destroy all current strings.
-		string:destroy()
+	for string,_ in pairs(self.currentStrings) do 											-- destroy all current strings.
+		string:_destroy()
 	end 
 	self.currentStrings = {} 																-- clear the current strings list
 	FontManager:_stopEnterFrame() 															-- turn the animation off.
@@ -545,7 +545,7 @@ end
 --//	@bitmapString [BitmapString]	Newly created bitmap string object which the manager kneeds to know about
 
 function FontManager:addStringReference(bitmapString)
-	self.currentStrings[#self.currentStrings+1] = bitmapString 								-- remember the string we are adding.
+	self.currentStrings[bitmapString] = bitmapString 										-- remember the string we are adding.
 	self:_startEnterFrame() 																-- we now need the enter frame tick.
 end
 
@@ -574,7 +574,7 @@ function FontManager:enterFrame(e)
 	local currentTime = system.getTimer() 													-- elapsed time in milliseconds
 	if currentTime > self.nextAnimation then 												-- time to animate - we animated at a fixed rate, irrespective of fps.
 		self.nextAnimation = currentTime + 1000 / self.animationsPerSecond 					-- very approximate, not too worried about errors.
-		for _,string in ipairs(self.currentStrings) do 										-- iterate through current strings.
+		for string,_ in pairs(self.currentStrings) do 										-- iterate through current strings.
 			if string:isAnimated() or string:isInvalid() then 								-- if the string is animated or invalid, then reformat it.
 				string:repositionAndScale() 												-- changes will pick up in the Modifier class/function.
 			end
@@ -822,3 +822,8 @@ end
 display.hiddenBitmapStringPrototype = BitmapString 												-- we make sure the display knows about the class it needs
 
 return { BitmapString = BitmapString, FontManager = FontManager, Modifiers = Modifiers } 		-- hand it back to the caller so it can use it.
+
+-- TODO: Tracking uses hash not list.
+-- TODO: Add option to 'destroy' string neatly (remove)
+-- TODO: Add inverse curve shape to standard.
+-- TODO: Add transitioning to demo ?
