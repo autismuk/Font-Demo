@@ -203,6 +203,14 @@ function BitmapString:initialise(font,fontSize)
 	FontManager:addStringReference(self) 													-- tell the font manager about the new string.
 end
 
+--//		Remove the current string from the screen and remove the reference from the list.
+
+function BitmapString:remove()
+	self:_destroy() 																		-- delete the string, free all resources etc.
+	FontManager:removeStringReference(self)
+end
+
+
 --//%		Destructor, not called by lua, but used by clear screen method - tidies up bitmap font and frees all resources, so ClearScreen can be used
 --//		on scene exit event or similar.
 
@@ -216,6 +224,10 @@ function BitmapString:_destroy()
 	self.viewGroup = nil 																	-- no reference to view group
 	self.modifier = nil 																	-- no reference to a modifier instance if there was one
 	self.eventListeners = nil 																-- clear reference to list.
+	self.animationSpeedScalar = nil self.fontSize = nil self.spacingAdjust = nil 			-- clear everything else out :)
+	self.usageCount = nil self.length = nil self.xScale = nil self.yScale = nil 			-- it is done this way so we can nil out the object to check everything
+	self.text = nil self.anchorX = nil self.anchorY = nil  									-- is cleared up - none of these are references.
+	self.fontAnimated = nil self.createTime = nil self.isValid = nil self.direction = nil
 end
 
 --//	Set the text. It uses the current text as a basis for display objects for the font, reusing them when possible, then frees any that are left over
@@ -545,8 +557,17 @@ end
 --//	@bitmapString [BitmapString]	Newly created bitmap string object which the manager kneeds to know about
 
 function FontManager:addStringReference(bitmapString)
+	assert(self.currentStrings[bitmapString] == nil,"String reference duplicate ?")
 	self.currentStrings[bitmapString] = bitmapString 										-- remember the string we are adding.
 	self:_startEnterFrame() 																-- we now need the enter frame tick.
+end
+
+--//%	Remove a string from that known from the list maintained by the font mananger.
+--//	@bitmapString [BitmapString]	Newly created bitmap string object which the manager kneeds to know about
+
+function FontManager:removeStringReference(bitmapString)
+	assert(self.currentStrings[bitmapString] ~= nil,"String reference missing ???")
+	self.currentStrings[bitmapString] = nil 												-- blank the reference.
 end
 
 --//%	Turn on the eventframe event.
@@ -698,6 +719,21 @@ function SimpleCurveModifier:modify(modifier,cPos,elapsed,index,length)
 	modifier.yOffset = FontManager:curve(self.curveDesc,cPos) * 50 * self.scale 			
 end
 
+--//	Extend simple Curve scale Modifier so it is inverted.
+
+local SimpleInverseCurveModifier = SimpleCurveModifier:new()
+
+--// %	Make the modifications needed to change the vertical position
+--//	@modifier [Modifier Table]	Structure to modify to change effects
+--//	@cPos [number]  Position in effect
+--//	@elapsed [number] ms elapsed since creation of bitmap string
+--//	@index [number] character number
+--//	@length [number] string length
+
+function SimpleInverseCurveModifier:modify(modifier,cPos,elapsed,index,length)
+	modifier.yOffset = - FontManager:curve(self.curveDesc,cPos) * 50 * self.scale 			
+end
+
 --//	Modifier which changes the vertical scale on a curve
 
 local SimpleCurveScaleModifier = SimpleCurveModifier:new()						 			-- curvepos scales the text vertically rather than the position.
@@ -711,6 +747,21 @@ local SimpleCurveScaleModifier = SimpleCurveModifier:new()						 			-- curvepos 
 
 function SimpleCurveScaleModifier:modify(modifier,cPos,elapsed,index,length)
 	modifier.yScale = FontManager:curve(self.curveDesc,cPos)*self.scale+1 					-- so we just override the bit that applies it.
+end
+
+--//	Scale but shaped the other way.
+
+local SimpleInverseCurveScaleModifier = SimpleCurveScaleModifier:new()
+
+--// %	Make the modifications needed to change the vertical scale
+--//	@modifier [Modifier Table]	Structure to modify to change effects
+--//	@cPos [number]  Position in effect
+--//	@elapsed [number] ms elapsed since creation of bitmap string
+--//	@index [number] character number
+--//	@length [number] string length
+
+function SimpleInverseCurveScaleModifier:modify(modifier,cPos,elapsed,index,length)
+	modifier.yScale = 1 - FontManager:curve(self.curveDesc,cPos)*self.scale*2/3					-- so we just override the bit that applies it.
 end
 
 --// 	Modifier which turns alternate characters 15 degrees in different directions
@@ -769,14 +820,18 @@ end
 
 FontManager:registerModifier("wobble",WobbleModifier:new())									-- tell the system about them.
 FontManager:registerModifier("curve",SimpleCurveModifier:new())
+FontManager:registerModifier("icurve",SimpleInverseCurveModifier:new())
 FontManager:registerModifier("scale",SimpleCurveScaleModifier:new())
+FontManager:registerModifier("iscale",SimpleInverseCurveScaleModifier:new())
 FontManager:registerModifier("jagged",JaggedModifier:new())
 FontManager:registerModifier("zoomout",ZoomOutModifier:new())
 FontManager:registerModifier("zoomin",ZoomInModifier:new())
 
 local Modifiers = { WobbleModifier = WobbleModifier,										-- create table so we can provide the Modifiers.
 					SimpleCurveModifier = SimpleCurveModifier,
+					SimpleInverseCurveModifier = SimpleCurveModifier,
 					SimpleCurveScaleModifier = SimpleCurveScaleModifier,
+					SimpleInverseCurveScaleModifier = SimpleInverseCurveScaleModifier,
 					JaggedModifier = JaggedModifier,
 					ZoomOutModifier = ZoomOutModifier,
 					ZoomInModifier = ZoomInModifier }
@@ -823,7 +878,4 @@ display.hiddenBitmapStringPrototype = BitmapString 												-- we make sure t
 
 return { BitmapString = BitmapString, FontManager = FontManager, Modifiers = Modifiers } 		-- hand it back to the caller so it can use it.
 
--- TODO: Tracking uses hash not list.
--- TODO: Add option to 'destroy' string neatly (remove)
--- TODO: Add inverse curve shape to standard.
 -- TODO: Add transitioning to demo ?

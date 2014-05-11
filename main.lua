@@ -90,6 +90,11 @@ function DisplayScene:create()
 	self.background.anchorX,self.background.anchorY = 0,0
 	self.background:setFillColor(0,0,0.3)
 	self:insert(self.background)
+end
+
+--//	Pre-open, create and perhaps animate the fonts.
+
+function DisplayScene:preOpen()
 	self.text = {} 																				-- array of three bitmap objects to create
 	self.text[1] = display.newBitmapText("This is text",display.contentWidth/2,display.contentHeight/4,"font1",64)
 	self.text[2] = display.newBitmapText("This is text",display.contentWidth/2,display.contentHeight/2,"font3",64):setScale(0.5,1)
@@ -118,6 +123,13 @@ end
 
 function DisplayScene:preClose()
 	self.background:removeEventListener( "tap",self)
+end
+
+--//	On close, remove the texts back to the system.
+
+function DisplayScene:postClose()
+	for i = 1,3 do self.text[i]:remove() end
+	self.text = {}
 end
 
 --//	Handle the tap
