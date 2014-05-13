@@ -140,18 +140,18 @@ end
 
 --//	A modifier that does the pulser - this and spinner are code types.
 
-function pulser(modifier, cPos, elapsed, index, length)
-	local w = math.floor(elapsed/250) % length + 1 												-- every 180ms change character, creates a number 1 .. length
-	if index == w then  																		-- are we scaling this character
-		local newScale = 1 + (elapsed % 250) / 250 												-- calculate the scale zoom - make it 2- rather than 1+, it goes backwards
+function pulser(modifier, cPos, info)
+	local w = math.floor(info.elapsed/250) % info.length + 1 									-- every 180ms change character, creates a number 1 .. length
+	if info.index == w then  																	-- are we scaling this character
+		local newScale = 1 + (info.elapsed % 250) / 250 										-- calculate the scale zoom - make it 2- rather than 1+, it goes backwards
 		modifier.xScale,modifier.yScale = newScale,newScale 									-- scale it up
 	end
 end
 
 --//	A modifier that rotates the characters at various rates
 
-function spinner(modifier, cPos, elapsed, index, length)
-	local r =  elapsed / (3 + index) 															-- elapsed is elapsed time in ms, index is character position in the string
+function spinner(modifier, cPos, info)
+	local r =  info.elapsed / (3 + info.index) 													-- elapsed is elapsed time in ms, index is character position in the string
 	modifier.rotation = r  																		-- rotate the character.
 end
 

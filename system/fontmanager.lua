@@ -186,9 +186,7 @@ function BitmapString:initialise(font,fontSize)
 	self.font = font 																		-- Save reference to a bitmap font.
 	self.fontSize = fontSize or 32 															-- Save reference to the font size.
 	self.text = "" 																			-- text as string.
-	self.length = 0 																		-- number of characters.
-	self.characterCodes = {} 																-- Character codes of string, fed through mapper.
-	self.displayObjects = {} 																-- Corresponding display objects
+	self.charData = { length = 0 } 															-- character data array.
 	self.direction = 0 																		-- text direction, in degrees (right angles only)
 	self.xScale, self.yScale = 1,1 															-- text standard scale.
 	self.spacingAdjust = 0 																	-- spacing adjustment.
@@ -207,7 +205,7 @@ end
 
 function BitmapString:remove()
 	self:_destroy() 																		-- delete the string, free all resources etc.
-	FontManager:removeStringReference(self)
+	FontManager:removeStringReference(self) 												-- tell FontManager to forget about it.
 end
 
 
@@ -239,27 +237,30 @@ end
 function BitmapString:setText(text) 														-- set the text, adjust display objects to suit, reusing where possible.
 	if text == self.text then return self end 												-- if no changes, then return immediately.
 	self.text = text 																		-- save the text
-	self.stockList = self.characterCodes 													-- put all the current objects where we can reuse them if we can.
-	self.stockObjects = self.displayObjects 
-	self.characterCodes = {} 																-- and blank the current list. 
-	self.displayObjects = {}
+	self.oldData = self.charData 															-- save the old character record.
+	self.charData = { length = 0 } 															-- create a new empty character record.
+
 	for i = 1,#text do 																		-- work through every character.
 		local code = text:sub(i,i):byte(1)													-- convert to ascii code
 		code = self.font:mapCharacterToFont(code) 											-- map to an available font character.
-		self.characterCodes[i] = code 														-- save the code.
-		self.displayObjects[i] = self:_useOrCreateCharacterObject(code) 					-- create and store display objects
+		local charRecord = { code = code }													-- save the character code
+		charRecord.displayObject = self:_useOrCreateCharacterObject(code) 					-- create and store display objects
+		self.charData.length = self.charData.length + 1
+		self.charData[self.charData.length] = charRecord 									-- add to the list of characters we have.
 	end
-	self.length = #text 																	-- store the length of the string.
-	for _,obj in pairs(self.stockObjects) do 												-- remove any objects left in the stock.
-		if obj ~= nil then 
-			obj:removeSelf() 																-- remove it from everything.
+
+	for i = 1,self.oldData.length do 														-- remove any objects left in the stock.
+		local obj = self.oldData[i]
+		if obj.displayObject ~= nil then  													-- if it hasn't been used up.
+			obj.displayObject:removeSelf() 													-- remove it from everything.
 			self.usageCount = self.usageCount - 1 											-- reduce the count, so it matches the number of live objects
 		end
 	end
-	self.stockList = nil  																	-- erase the outstanding stock list.
-	self.stockObjects = nil 																-- so there are no outstanding references.
-	assert(self.usageCount == self.length,"Bitmap Object leak")
+	self.oldData = nil 																		-- clear references to old objects.
 	self:reformat() 																		-- reformat the string.
+	if self.text == "" then 																-- if clearing, check everything is clear.
+		assert(self.usageCount == 0,"usage count wrong, some objects have leaked")
+	end
 	return self 																			-- permit chaining.
 end
 
@@ -270,11 +271,11 @@ end
 --//	@return [display Object]	Corona Display Object representing the character.
 
 function BitmapString:_useOrCreateCharacterObject(characterCode)
-	for i = 1,#self.stockList do 															-- check through the stock list.
-		if self.stockList[i] == characterCode then 											-- found a matching one.
-			local obj = self.stockObjects[i] 												-- keep a reference to the stock object
-			self.stockList[i] = -1 															-- set the character code to an illegal one, won't match again.
-			self.stockObjects[i] = nil 														-- clear the reference to the stock object
+	for i = 1,self.oldData.length do 														-- check through the stock list.
+		if self.oldData[i].code == characterCode then 										-- found a matching one.
+			local obj = self.oldData[i].displayObject 										-- keep a reference to the stock object
+			self.oldData[i].code = -1 														-- set the character code to an illegal one, won't match again.
+			self.oldData[i].displayObject = nil 											-- clear the reference to the stock object
 			return obj 																		-- return the reused object.
 		end
 	end
@@ -318,36 +319,51 @@ end
 
 function BitmapString:repositionAndScale()
 	self.isValid = true 																	-- it will be valid at this point.
-	if self.length == 0 then return end 													-- if length is zero, we don't have to do anything.
-	local nextX,nextY = 0,0		 															-- where the next character goes.
+	self.minx,self.miny,self.maxx,self.maxy = 0,0,0,0 										-- initialise the tracked drawing rectangle
+	self:paintandFormatLine(self.charData,0,0) 												-- repaint that line.
+	self:postProcessAnchorFix()																-- adjust positioning for given anchor.
+end
+
+--//	Paint and format the given line.
+--//	@lineData	[table]			table consisting of array of { code, displayObject } with a length property
+--//	@nextX 		[number]		where we start drawing from x
+--//	@nextY 		[number]		where we start drawing from y
+--//	@spacing 	[number]		extra spacing to format the text correctly.
+
+function BitmapString:paintandFormatLine(lineData,nextX,nextY,spacing)
+	if lineData.length == 0 then return end 												-- if length is zero, we don't have to do anything.
+	spacing = spacing or 0 																	-- spacing is zero if not provided
 	local height = self.font:getCharacterHeight(32,self.fontSize,self.yScale) 				-- all characters are the same height, or in the same box.
-	local maxx,maxy,minx,miny 																-- bounding box of the unmodified character.
 	local elapsed = system.getTimer() - self.createTime 									-- elapsed time since creation.
-	local minScale = 0.6
 
-	for i = 1,self.length do 																
-		local width = self.font:getCharacterWidth(self.characterCodes[i],					-- calculate the width of the character.
+	for i = 1,lineData.length do 																
+		local width = self.font:getCharacterWidth(lineData[i].code,							-- calculate the width of the character.
 																self.fontSize,self.xScale)
-
-		if i == 1 then minx,miny,maxx,maxy = 0,0,width,height end 							-- initialise bounding box to first char first time.
+		if i == 1 then 																		-- initialise bounding box to first char first time.
+			self.maxx = math.max(self.maxx,nextX+width)
+			self.maxy = math.max(self.maxy,nextY+height)
+		end 				
 
 		local modifier = { xScale = 1, yScale = 1, xOffset = 0, yOffset = 0, rotation = 0 }	-- default modifier
 
 		if self.modifier ~= nil then 														-- modifier provided
-			local cPos = math.round(100 * (i - 1) / (self.length - 1)) 						-- position in string 0->100
+			local cPos = math.round(100 * (i - 1) / (lineData.length - 1)) 					-- position in string 0->100
 			if self.fontAnimated then 														-- if animated then advance that position by time.
 				cPos = math.round(cPos + elapsed / 100 * self.animationSpeedScalar) % 100 
 			end
+
+			local infoTable = { elapsed = elapsed, index = i, length = lineData.length } 	-- construct current information table
+
 			if type(self.modifier) == "table" then 											-- if it is a table, e.g. a class, call its modify method
-				self.modifier:modify(modifier,cPos,elapsed,i,self.length)
+				self.modifier:modify(modifier,cPos,infoTable)
 			else 																			-- otherwise, call it as a function.
-				self.modifier(modifier,cPos,elapsed,i,self.length)
+				self.modifier(modifier,cPos,infoTable)
 			end
 			if math.abs(modifier.xScale) < 0.001 then modifier.xScale = 0.001 end 			-- very low value scaling does not work, zero causes an error
 			if math.abs(modifier.yScale) < 0.001 then modifier.yScale = 0.001 end
 		end
 
-		self.font:moveScaleCharacter(self.displayObjects[i], 								-- call moveScaleCharacter with modifier.
+		self.font:moveScaleCharacter(lineData[i].displayObject, 							-- call moveScaleCharacter with modifier.
 												 self.fontSize,
 												 nextX,
 												 nextY,
@@ -355,32 +371,36 @@ function BitmapString:repositionAndScale()
 									 			 modifier.xScale,modifier.yScale,
 									 			 modifier.xOffset,modifier.yOffset,
 									 			 modifier.rotation)
-
 		if self.direction == 0 then 														-- advance to next position using character width, updating the bounding box
-			nextX = nextX + width + self.spacingAdjust * math.abs(self.xScale) 			
-			maxx = nextX
+			nextX = nextX + width + (self.spacingAdjust+spacing) * math.abs(self.xScale) 			
+			self.maxx = math.max(self.maxx,nextX)
 		elseif self.direction == 180 then  													-- when going left, we need the width of the *next* character.
-			if i < self.length then
-				local pWidth = self.font:getCharacterWidth(self.characterCodes[i+1],self.fontSize,self.xScale)
-				nextX = nextX - pWidth - self.spacingAdjust * math.abs(self.xScale) 	
-				minx = nextX
+			if i < lineData.length then
+				local pWidth = self.font:getCharacterWidth(lineData[i+1].code,self.fontSize,self.xScale)
+				nextX = nextX - pWidth - (self.spacingAdjust+spacing) * math.abs(self.xScale) 	
+				self.minx = math.min(self.minx,nextX)
 			end
 		elseif self.direction == 270 then  													-- up and down tend to be highly spaced, because the kerning stuff is not
 			nextY = nextY + height + self.spacingAdjust * math.abs(self.xScale) 			-- designed for this. You can fix it with setSpacing()
-			maxy = nextY
+			self.maxy = math.max(self.maxy,nextY)
 		else
-			miny = nextY
+			self.miny = math.min(self.miny,nextY)
 			nextY = nextY - height - self.spacingAdjust * math.abs(self.xScale) 			
 
 		end
 	end
+end
 
-	local xOffset = -minx-(maxx-minx) * self.anchorX 										-- we want it to be centred around the anchor point, we cannot use anchorChildren
-	local yOffset = -miny-(maxy-miny) * self.anchorY 										-- because of the animated modifications, so we calculate it
+--//	Fix up the positioning to allow for the drawing rectangle (pre-modifier) and the anchors.
 
-	for i = 1,self.length do 																-- and move the objects appropriately.
-		self.displayObjects[i].x = self.displayObjects[i].x + xOffset
-		self.displayObjects[i].y = self.displayObjects[i].y + yOffset
+function BitmapString:postProcessAnchorFix()
+	local xOffset = -self.minx-(self.maxx-self.minx) * self.anchorX 						-- we want it to be centred around the anchor point, we cannot use anchorChildren
+	local yOffset = -self.miny-(self.maxy-self.miny) * self.anchorY 						-- because of the animated modifications, so we calculate it
+
+	for i = 1,self.charData.length do 														-- and move the objects appropriately.
+		local obj = self.charData[i].displayObject
+		obj.x = obj.x + xOffset
+		obj.y = obj.y + yOffset
 	end
 end
 
@@ -680,11 +700,9 @@ function WobbleModifier:initialise(violence) self.violence = violence or 1 end
 --// %	Make the font wobble by changing values just a little bit
 --//	@modifier [Modifier Table]	Structure to modify to change effects
 --//	@cPos [number]  Position in effect
---//	@elapsed [number] ms elapsed since creation of bitmap string
---//	@index [number] character number
---//	@length [number] string length
+--//	@info [table] Information about the character/string/line
 
-function WobbleModifier:modify(modifier,cPos,elapsed,index,length)
+function WobbleModifier:modify(modifier,cPos,info)
 	modifier.xOffset = math.random(-self.violence,self.violence) 							-- adjust all these values by the random level of 'violence'
 	modifier.yOffset = math.random(-self.violence,self.violence)
 	modifier.xScale = math.random(-self.violence,self.violence) / 10 + 1
@@ -711,11 +729,9 @@ end
 --// %	Make the modifications needed to change the vertical position
 --//	@modifier [Modifier Table]	Structure to modify to change effects
 --//	@cPos [number]  Position in effect
---//	@elapsed [number] ms elapsed since creation of bitmap string
---//	@index [number] character number
---//	@length [number] string length
+--//	@info [table] Information about the character/string/line
 
-function SimpleCurveModifier:modify(modifier,cPos,elapsed,index,length)
+function SimpleCurveModifier:modify(modifier,cPos,info)
 	modifier.yOffset = FontManager:curve(self.curveDesc,cPos) * 50 * self.scale 			
 end
 
@@ -726,11 +742,9 @@ local SimpleInverseCurveModifier = SimpleCurveModifier:new()
 --// %	Make the modifications needed to change the vertical position
 --//	@modifier [Modifier Table]	Structure to modify to change effects
 --//	@cPos [number]  Position in effect
---//	@elapsed [number] ms elapsed since creation of bitmap string
---//	@index [number] character number
---//	@length [number] string length
+--//	@info [table] Information about the character/string/line
 
-function SimpleInverseCurveModifier:modify(modifier,cPos,elapsed,index,length)
+function SimpleInverseCurveModifier:modify(modifier,cPos,info)
 	modifier.yOffset = - FontManager:curve(self.curveDesc,cPos) * 50 * self.scale 			
 end
 
@@ -741,11 +755,9 @@ local SimpleCurveScaleModifier = SimpleCurveModifier:new()						 			-- curvepos 
 --// %	Make the modifications needed to change the vertical scale
 --//	@modifier [Modifier Table]	Structure to modify to change effects
 --//	@cPos [number]  Position in effect
---//	@elapsed [number] ms elapsed since creation of bitmap string
---//	@index [number] character number
---//	@length [number] string length
+--//	@info [table] Information about the character/string/line
 
-function SimpleCurveScaleModifier:modify(modifier,cPos,elapsed,index,length)
+function SimpleCurveScaleModifier:modify(modifier,cPos,info)
 	modifier.yScale = FontManager:curve(self.curveDesc,cPos)*self.scale+1 					-- so we just override the bit that applies it.
 end
 
@@ -756,12 +768,10 @@ local SimpleInverseCurveScaleModifier = SimpleCurveScaleModifier:new()
 --// %	Make the modifications needed to change the vertical scale
 --//	@modifier [Modifier Table]	Structure to modify to change effects
 --//	@cPos [number]  Position in effect
---//	@elapsed [number] ms elapsed since creation of bitmap string
---//	@index [number] character number
---//	@length [number] string length
+--//	@info [table] Information about the character/string/line
 
-function SimpleInverseCurveScaleModifier:modify(modifier,cPos,elapsed,index,length)
-	modifier.yScale = 1 - FontManager:curve(self.curveDesc,cPos)*self.scale*2/3					-- so we just override the bit that applies it.
+function SimpleInverseCurveScaleModifier:modify(modifier,cPos,info)
+	modifier.yScale = 1 - FontManager:curve(self.curveDesc,cPos)*self.scale*2/3				-- so we just override the bit that applies it.
 end
 
 --// 	Modifier which turns alternate characters 15 degrees in different directions
@@ -771,12 +781,10 @@ local JaggedModifier = Modifier:new()														-- jagged alternates left and
 --// %	Make the modifications needed to look jagged
 --//	@modifier [Modifier Table]	Structure to modify to change effects
 --//	@cPos [number]  Position in effect
---//	@elapsed [number] ms elapsed since creation of bitmap string
---//	@index [number] character number
---//	@length [number] string length
+--//	@info [table] Information about the character/string/line
 
-function JaggedModifier:modify(modifier,cPos,elapsed,index,length)
-	modifier.rotation = ((index % 2 * 2) - 1) * 15 											-- generates -15 and +15 rotation alternately on index.
+function JaggedModifier:modify(modifier,cPos,info)
+	modifier.rotation = ((info.index % 2 * 2) - 1) * 15 									-- generates -15 and +15 rotation alternately on index.
 end
 
 --//	Modifier which zooms characters from 0->1 but the base positions don't change.
@@ -793,12 +801,10 @@ end
 --// %	Make the modifications to cause the zoom
 --//	@modifier [Modifier Table]	Structure to modify to change effects
 --//	@cPos [number]  Position in effect
---//	@elapsed [number] ms elapsed since creation of bitmap string
---//	@index [number] character number
---//	@length [number] string length
+--//	@info [table] Information about the character/string/line
 
-function ZoomOutModifier:modify(modifier,cPos,elapsed,index,length)
-	local scale = math.min(1,elapsed / self.zoomTime)
+function ZoomOutModifier:modify(modifier,cPos,info)
+	local scale = math.min(1,info.elapsed / self.zoomTime)
 	modifier.xScale,modifier.yScale = scale,scale
 end
 
@@ -809,12 +815,10 @@ local ZoomInModifier = ZoomOutModifier:new() 												-- Zoom in, as zoom out
 --// %	Make the modifications to cause the zoom.
 --//	@modifier [Modifier Table]	Structure to modify to change effects
 --//	@cPos [number]  Position in effect
---//	@elapsed [number] ms elapsed since creation of bitmap string
---//	@index [number] character number
---//	@length [number] string length
+--//	@info [table] Information about the character/string/line
 
-function ZoomInModifier:modify(modifier,cPos,elapsed,index,length)
-	local scale = math.min(1,elapsed / self.zoomTime)
+function ZoomInModifier:modify(modifier,cPos,info)
+	local scale = math.min(1,info.elapsed / self.zoomTime)
 	modifier.xScale,modifier.yScale = 1-scale,1-scale
 end
 
@@ -878,4 +882,7 @@ display.hiddenBitmapStringPrototype = BitmapString 												-- we make sure t
 
 return { BitmapString = BitmapString, FontManager = FontManager, Modifiers = Modifiers } 		-- hand it back to the caller so it can use it.
 
--- TODO: Add transitioning to demo ?
+-- if direction not 0 or 180 then forbid newlines (replace them)
+-- word tracking
+-- line tracking
+
