@@ -67,8 +67,7 @@ function BitmapFont:loadFont(fontName)
 			charInfo.frame = optionsEntry 													-- and store a reference to the sprite rectangle in the image sheet
 
 			assert(self.characterData[charID] == nil,"Duplicate character code, contact author")
-			self.characterData[charID*1] = charInfo
-
+			self.characterData[charID*1] = charInfo 										-- store the full font information in the characterData table.
 			spriteCount = spriteCount + 1 													-- bump the number of sprites
 		end
 	end
@@ -138,7 +137,7 @@ end
 --//	@return [number]			Code of character which does actually exist in the font.
 
 function BitmapFont:mapCharacterToFont(characterCode)
-	if self.characterData[characterCode] == nil then characterCode = '?' end 				-- map unknown chaaracters onto question marks.
+	if self.characterData[characterCode] == nil then characterCode = 63 end 				-- map unknown characters onto question mark (Code 63).
 	return characterCode
 end
 
@@ -186,7 +185,8 @@ function BitmapString:initialise(font,fontSize)
 	self.font = font 																		-- Save reference to a bitmap font.
 	self.fontSize = fontSize or 32 															-- Save reference to the font size.
 	self.text = "" 																			-- text as string.
-	self.charData = { length = 0 } 															-- character data array.
+	self.lineData = {}																		-- character lines array.
+	self.wordCount = 0 																		-- number of words.
 	self.direction = 0 																		-- text direction, in degrees (right angles only)
 	self.xScale, self.yScale = 1,1 															-- text standard scale.
 	self.spacingAdjust = 0 																	-- spacing adjustment.
@@ -198,6 +198,8 @@ function BitmapString:initialise(font,fontSize)
 	self.fontAnimated = false 																-- not an animated bitmap
 	self.animationSpeedScalar = 1 															-- animation speed adjustment.
 	self.eventListeners = {} 																-- map of event listener name -> handler.
+	self.verticalSpacing = 1 																-- vertical spacing scalar
+	self:setTintColor() 																	-- set the default tinting colour.
 	FontManager:addStringReference(self) 													-- tell the font manager about the new string.
 end
 
@@ -226,7 +228,9 @@ function BitmapString:_destroy()
 	self.usageCount = nil self.length = nil self.xScale = nil self.yScale = nil 			-- it is done this way so we can nil out the object to check everything
 	self.text = nil self.anchorX = nil self.anchorY = nil  									-- is cleared up - none of these are references.
 	self.fontAnimated = nil self.createTime = nil self.isValid = nil self.direction = nil
+	self.lineData = nil self.verticalSpacing = nil
 end
+
 
 --//	Set the text. It uses the current text as a basis for display objects for the font, reusing them when possible, then frees any that are left over
 --//	If there isn't a character to reuse, it creates one.
@@ -237,29 +241,56 @@ end
 function BitmapString:setText(text) 														-- set the text, adjust display objects to suit, reusing where possible.
 	if text == self.text then return self end 												-- if no changes, then return immediately.
 	self.text = text 																		-- save the text
-	self.oldData = self.charData 															-- save the old character record.
-	self.charData = { length = 0 } 															-- create a new empty character record.
 
-	for i = 1,#text do 																		-- work through every character.
-		local code = text:sub(i,i):byte(1)													-- convert to ascii code
-		code = self.font:mapCharacterToFont(code) 											-- map to an available font character.
-		local charRecord = { code = code }													-- save the character code
-		charRecord.displayObject = self:_useOrCreateCharacterObject(code) 					-- create and store display objects
-		self.charData.length = self.charData.length + 1
-		self.charData[self.charData.length] = charRecord 									-- add to the list of characters we have.
+	self.oldData = self.lineData 															-- save the old line record.
+	self.lineData = { { length = 0, pixelWidth = 0 }} 										-- create a line data record with one empty entry (e.g. the first line)
+	local currentLine = 1 																	-- current line being read in.
+	local stringPtr = 1 																	-- position in string.
+	self.wordCount = 0 																		-- zero the word count
+	self.inWord = false 																	-- currently not in a word, first word will shift to 1.
+	while stringPtr <= #text do 															-- work through every character.
+		local code
+		code,stringPtr = self:extractCharacter(text,stringPtr) 								-- get the next character
+
+		local newInWord = (code > 32)														-- true if 'word' character
+		if newInWord ~= self.inWord then 													-- has the state changed.
+			self.inWord = newInWord 														-- save the new state.
+			if self.inWord then self.wordCount = self.wordCount + 1 end 					-- if now in a word, bump the word count.
+		end
+
+		if code == 10 or code == 13 then  													-- is it 13 or 10 (\n, \r)
+			if self.direction == 0 or self.direction == 180 then 							-- no multilines on vertical characters.
+				currentLine = currentLine + 1 												-- next line.
+				self.lineData[currentLine] =  { length = 0, pixelWidth = 0 }				-- create a blank next line
+			end
+		else 																				-- all other characters
+			code = self.font:mapCharacterToFont(code) 										-- map to an available font character.
+			local charRecord = { code = code }												-- save the character code
+			charRecord.displayObject = self:_useOrCreateCharacterObject(code) 				-- create and store display objects
+			charRecord.lineNumber = currentLine 											-- save the line number this character is on.
+			charRecord.wordNumber = self.wordCount 											-- save the word number this character is in.
+			local currentRecord = self.lineData[currentLine] 								-- this is the record where it goes.
+			currentRecord.length = currentRecord.length + 1 								-- increment the length of the current record
+			currentRecord.pixelWidth = currentRecord.pixelWidth + 							-- keep track of the scale neutral pixel width
+								self.font:getCharacterWidth(code,self.fontSize,1)
+			currentRecord[currentRecord.length] = charRecord 								-- add to the list of characters we have for this line
+		end
 	end
 
-	for i = 1,self.oldData.length do 														-- remove any objects left in the stock.
-		local obj = self.oldData[i]
-		if obj.displayObject ~= nil then  													-- if it hasn't been used up.
-			obj.displayObject:removeSelf() 													-- remove it from everything.
-			self.usageCount = self.usageCount - 1 											-- reduce the count, so it matches the number of live objects
+	for line = 1,#self.oldData do 															-- remove any objects left in the stock.
+		for cNum = 1,self.oldData[line].length do 
+			local obj = self.oldData[line][cNum]
+			if obj.displayObject ~= nil then  												-- if it hasn't been used up.
+				obj.displayObject:removeSelf() 												-- remove it from everything.
+				self.usageCount = self.usageCount - 1 										-- reduce the count, so it matches the number of live objects
+			end
 		end
 	end
 	self.oldData = nil 																		-- clear references to old objects.
 	self:reformat() 																		-- reformat the string.
 	if self.text == "" then 																-- if clearing, check everything is clear.
 		assert(self.usageCount == 0,"usage count wrong, some objects have leaked")
+		assert(self.viewGroup.numChildren == 0,"viewgroup not empty")
 	end
 	return self 																			-- permit chaining.
 end
@@ -271,19 +302,51 @@ end
 --//	@return [display Object]	Corona Display Object representing the character.
 
 function BitmapString:_useOrCreateCharacterObject(characterCode)
-	for i = 1,self.oldData.length do 														-- check through the stock list.
-		if self.oldData[i].code == characterCode then 										-- found a matching one.
-			local obj = self.oldData[i].displayObject 										-- keep a reference to the stock object
-			self.oldData[i].code = -1 														-- set the character code to an illegal one, won't match again.
-			self.oldData[i].displayObject = nil 											-- clear the reference to the stock object
-			return obj 																		-- return the reused object.
-		end
+	for l = 1,#self.oldData do 
+		for i = 1,self.oldData[l].length do
+			local obj = self.oldData[l][i]
+			if obj.code == characterCode then 												-- found a matching one.
+				local displayObject = obj.displayObject
+		 		obj.code = -1 																-- set the character code to an illegal one, won't match again.
+				obj.displayObject = nil 													-- clear the reference to the stock object
+	 			return displayObject 														-- return the reused object.
+	 		end
+	 	end
 	end
 	self.usageCount = self.usageCount + 1 													-- create a new one, so bump the usage counter we check with.
 	local newObject = self.font:getCharacter(characterCode) 								-- we need a new one.
 	self.viewGroup:insert(newObject) 														-- put it in the view group
 	return newObject
 end
+
+--//%	Extract a single unicode character from the string
+--//	@string 	[string] 				string to extract character from
+--//	@stringPtr 	[number]				position in string
+--//	@return 	[number,number]			unicode value of character, position of next character in string
+
+function BitmapString:extractCharacterUnicode(string,stringPtr)
+	return string:sub(stringPtr,stringPtr):byte(1),stringPtr+1 								-- get the next character code
+end
+
+--//%	Extract a single UTF-8 character from the string
+--//	@string 	[string] 				string to extract character from
+--//	@stringPtr 	[number]				position in string
+--//	@return 	[number,number]			unicode value of character, position of next character in string
+
+function BitmapString:extractCharacterUTF8(string,stringPtr)
+	local code = string:sub(stringPtr,stringPtr):byte(1) 									-- get first byte
+	if code < 0x80 then return code,stringPtr+1 end 										-- 00-7F return that value
+	assert(math.floor(code / 0x20) == 0x06,"UTF-8 more than 2 bytes not supported yet") 	-- only support 0000-07FF at present.
+	local code2 = string:sub(stringPtr+1,stringPtr+1):byte(1) 								-- get the second byte.
+	assert(math.floor(code2 / 0x40) == 0x02,"Malformed UTF-8 character")					-- has to be 10xx xxxx
+	return (code % 0x20) * 0x40 + (code2 % 0x40),stringPtr+2
+end
+
+--		BitmapString:extractCharacter is set up to be the same as BitmapString:extractCharacterUnicode
+--		which is the default, unicode decoding (as Lua has a standard 8 bit string construct)
+
+BitmapString.extractCharacter = BitmapString.extractCharacterUnicode
+
 
 --//	Add an event listener to the view. This is removed automatically on clear.
 --//	@eventName 	[string]	name of event e.g. tap, touch
@@ -320,7 +383,21 @@ end
 function BitmapString:repositionAndScale()
 	self.isValid = true 																	-- it will be valid at this point.
 	self.minx,self.miny,self.maxx,self.maxy = 0,0,0,0 										-- initialise the tracked drawing rectangle
-	self:paintandFormatLine(self.charData,0,0) 												-- repaint that line.
+	local fullWidth = 0 																	-- get the longest horizontal width
+	for i = 1,#self.lineData do 
+		fullWidth = math.max(fullWidth,self.lineData[i].pixelWidth * self.xScale)
+	end
+	for i = 1,#self.lineData do  															-- work through each line
+		local centre = (fullWidth - self.lineData[i].pixelWidth*self.xScale)/2 				-- how much to centre it
+		if self.direction == 180 then centre = -centre end 									-- handle centreing when rendering text backwards
+		self:paintandFormatLine(self.lineData[i], 											-- character data
+								centre, 													-- centre it by allowing space.
+								(i - 1) * self.verticalSpacing * 							-- vertical positioning
+											self.font:getCharacterHeight(32,self.fontSize,self.yScale),
+								self.spacing,
+								fullWidth,
+								#self.lineData)
+	end
 	self:postProcessAnchorFix()																-- adjust positioning for given anchor.
 end
 
@@ -329,8 +406,10 @@ end
 --//	@nextX 		[number]		where we start drawing from x
 --//	@nextY 		[number]		where we start drawing from y
 --//	@spacing 	[number]		extra spacing to format the text correctly.
+--//	@fullWidth 	[number]		full pixel width of string box
+--//	@lineCount  [number] 		total number of lines 
 
-function BitmapString:paintandFormatLine(lineData,nextX,nextY,spacing)
+function BitmapString:paintandFormatLine(lineData,nextX,nextY,spacing,fullWidth,lineCount)
 	if lineData.length == 0 then return end 												-- if length is zero, we don't have to do anything.
 	spacing = spacing or 0 																	-- spacing is zero if not provided
 	local height = self.font:getCharacterHeight(32,self.fontSize,self.yScale) 				-- all characters are the same height, or in the same box.
@@ -345,14 +424,19 @@ function BitmapString:paintandFormatLine(lineData,nextX,nextY,spacing)
 		end 				
 
 		local modifier = { xScale = 1, yScale = 1, xOffset = 0, yOffset = 0, rotation = 0 }	-- default modifier
+		modifier.tint = { red = self.tinting.red, blue = self.tinting.blue, 				-- use the default tinting.
+															green = self.tinting.green }
 
 		if self.modifier ~= nil then 														-- modifier provided
-			local cPos = math.round(100 * (i - 1) / (lineData.length - 1)) 					-- position in string 0->100
+			local cPos = (nextX + width / 2 - fullWidth) / fullWidth * 100 					-- position across string box, percent (0 to 100)
+
 			if self.fontAnimated then 														-- if animated then advance that position by time.
 				cPos = math.round(cPos + elapsed / 100 * self.animationSpeedScalar) % 100 
 			end
 
-			local infoTable = { elapsed = elapsed, index = i, length = lineData.length } 	-- construct current information table
+			local infoTable = { elapsed = elapsed, index = i, length = lineData.length,  	-- construct current information table
+								lineIndex = lineData[i].lineNumber, lineCount = lineCount,
+								wordIndex = lineData[i].wordNumber, wordCount = self.wordCount }
 
 			if type(self.modifier) == "table" then 											-- if it is a table, e.g. a class, call its modify method
 				self.modifier:modify(modifier,cPos,infoTable)
@@ -371,6 +455,10 @@ function BitmapString:paintandFormatLine(lineData,nextX,nextY,spacing)
 									 			 modifier.xScale,modifier.yScale,
 									 			 modifier.xOffset,modifier.yOffset,
 									 			 modifier.rotation)
+
+		lineData[i].displayObject:setFillColor(modifier.tint.red,							-- apply the tint to it.
+													modifier.tint.green,modifier.tint.blue) 			
+
 		if self.direction == 0 then 														-- advance to next position using character width, updating the bounding box
 			nextX = nextX + width + (self.spacingAdjust+spacing) * math.abs(self.xScale) 			
 			self.maxx = math.max(self.maxx,nextX)
@@ -397,10 +485,12 @@ function BitmapString:postProcessAnchorFix()
 	local xOffset = -self.minx-(self.maxx-self.minx) * self.anchorX 						-- we want it to be centred around the anchor point, we cannot use anchorChildren
 	local yOffset = -self.miny-(self.maxy-self.miny) * self.anchorY 						-- because of the animated modifications, so we calculate it
 
-	for i = 1,self.charData.length do 														-- and move the objects appropriately.
-		local obj = self.charData[i].displayObject
-		obj.x = obj.x + xOffset
-		obj.y = obj.y + yOffset
+	for l = 1,#self.lineData do
+		for i = 1,self.lineData[l].length do 												-- and move the objects appropriately.
+			local obj = self.lineData[l][i].displayObject
+			obj.x = obj.x + xOffset
+			obj.y = obj.y + yOffset
+		end
 	end
 end
 
@@ -503,6 +593,16 @@ function BitmapString:setSpacing(spacing)
 	return self
 end
 
+--//	Allows you to adjust the spacing between letters vertically
+--//	@spacing [number]	Pixels to insert between letters (or remove, can be negative) - scaled by y Scaling.
+--//	@return [BitmapString]	allows chaining.
+
+function BitmapString:setVerticalSpacing(spacing)
+	self.verticalSpacing = spacing or 1
+	self:reformat()
+	return self
+end
+
 --//	Set the Font Size
 --//	@size [number]	new font size (vertical pixel height), default is no change
 --//	@return [BitmapString]	allows chaining.
@@ -527,6 +627,17 @@ function BitmapString:setModifier(funcOrTable)
 	return self
 end
 
+--//	Apply an overall tint to the string. This can be overridden or modified using the tint table of the modifier
+--//	which itself has three fields - red, green and blue
+--//	@r 	[number] 		Red component 0-1
+--//	@g 	[number] 		Green component 0-1
+--//	@b 	[number] 		Blue component 0-1
+--//	@return [BitmapString] self
+function BitmapString:setTintColor(r,g,b)
+	self.tinting = { red = r or 1 , green = g or 1, blue = b or 1 }
+	return self
+end
+
 --- ************************************************************************************************************************************************************************
 -- 									this is the actual implementation of the FontManager which is forward referenced.
 --- ************************************************************************************************************************************************************************
@@ -542,6 +653,21 @@ function FontManager:initialise()
 	self.modifierDirectory = {} 															-- no known modifiers
 end
 
+--//	Set the string encoding used to convert strings to bitmap sequences
+--//	@enc [string] 		encoding, either (currently) unicode (default), utf8 or utf-8
+--//	@return [FontManager] chaining
+
+function FontManager:setEncoding(enc)
+	enc = (enc or "unicode"):lower()
+	if enc == "unicode" then
+		BitmapString.extractCharacter = BitmapString.extractCharacterUnicode
+	elseif enc == "utf8" or enc == "utf-8" then 
+		BitmapString.extractCharacter = BitmapString.extractCharacterUTF8
+	else
+		error("Unknown font encoding " .. enc)
+	end
+	return self
+end
 
 --//	Erase all text - clear screen effectively. All new text strings are registered with the font mananger.
 
@@ -680,8 +806,9 @@ FontManager.new = function() error("FontManager is a singleton instance") end 		
 --// 								tweak. Called for each character of the string. You can see all of them in Wobble, or just rotation in Jagged.</li>
 --//			<li>cPos 			the character position, from 0-100 - how far along the string this is. This does not correlate to string character
 --// 								position, as this is changed to animate the display. </li>
---// 			<li>info 			table containing information for the modifier : elapsed - elapsed time in ms, index, position in this line, length
---//								length of this line.</li></ul>
+--// 			<li>info 			table containing information for the modifier : elapsed - elapsed time in ms, index - position in this line, 
+--// 								length - length of this linem lineCount, lineIndex - line number of this character, lineCount - total number of lines
+--//								</li></ul>
 --
 --- ************************************************************************************************************************************************************************
 
@@ -881,7 +1008,5 @@ display.hiddenBitmapStringPrototype = BitmapString 												-- we make sure t
 
 return { BitmapString = BitmapString, FontManager = FontManager, Modifiers = Modifiers } 		-- hand it back to the caller so it can use it.
 
--- if direction not 0 or 180 then forbid newlines (replace them)
--- word tracking
--- line tracking
 
+-- tinting at the inline-character level.

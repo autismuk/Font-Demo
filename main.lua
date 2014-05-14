@@ -166,3 +166,4 @@ main:add("pulser",DisplayScene:new(pulser))
 main:add("spinner",DisplayScene:new(spinner))
 
 SM.SceneManager:gotoScene("main") 																-- and go to the main scene, e.g. the menu.
+
