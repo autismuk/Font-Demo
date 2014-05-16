@@ -23,7 +23,7 @@ local FontManager = Base:new() 																-- Fwd reference FontManager - it
 
 local BitmapFont = Base:new()
 
-BitmapFont.fontDirectory = "fonts" 															-- where fonts are, lua and png.
+BitmapFont.fontDirectory = "fonts" 															-- where font files are, fnt and png.
 
 --//	The Bitmap Font constructor. This reads in the font data 
 --//	@fontName [string] name of font (case is sensitive, so I advise use of lower case only)
@@ -209,10 +209,15 @@ BitmapString.endTintDef = "}"
 --//		Remove the current string from the screen and remove the reference from the list.
 
 function BitmapString:remove()
-	self:_destroy() 																		-- delete the string, free all resources etc.
-	FontManager:removeStringReference(self) 												-- tell FontManager to forget about it.
+	if self.font ~= nil then 																-- check to see if it hasn't already been removed. 
+		self:_destroy() 																	-- delete the string, free all resources etc.
+		FontManager:removeStringReference(self) 											-- tell FontManager to forget about it.
+	end
 end
 
+--//		RemoveSelf does the same thing
+
+function BitmapString:removeSelf() self:remove() end  										-- synonymous
 
 --//%		Destructor, not called by lua, but used by clear screen method - tidies up bitmap font and frees all resources, so ClearScreen can be used
 --//		on scene exit event or similar.
@@ -231,7 +236,8 @@ function BitmapString:_destroy()
 	self.usageCount = nil self.length = nil self.xScale = nil self.yScale = nil 			-- it is done this way so we can nil out the object to check everything
 	self.text = nil self.anchorX = nil self.anchorY = nil  									-- is cleared up - none of these are references.
 	self.fontAnimated = nil self.createTime = nil self.isValid = nil self.direction = nil
-	self.lineData = nil self.verticalSpacing = nil
+	self.lineData = nil self.verticalSpacing = nil self.inWord = nil self.wordCount = nil
+	self.tinting = nil
 end
 
 
@@ -421,6 +427,7 @@ end
 --// 	on unmodified characters - otherwise anchoring would not work.
 
 function BitmapString:repositionAndScale()
+	if not self.viewGroup.isVisible then return end 										-- if the viewgroup has been marked invisible don't animate it.
 	self.isValid = true 																	-- it will be valid at this point.
 	self.minx,self.miny,self.maxx,self.maxy = 0,0,0,0 										-- initialise the tracked drawing rectangle
 	local fullWidth = 0 																	-- get the longest horizontal width
@@ -1022,10 +1029,12 @@ local Modifiers = { WobbleModifier = WobbleModifier,										-- create table so
 
 --- ************************************************************************************************************************************************************************
 --
---		This adds a display.newBitmapText method which is fairly close to that provided by Corona for newText, as close as I can get. It is not multi-line so it does
---		not support width and height. Parent view may not be a great idea because of the animation of the font manager, but might work. 
+--		This adds a display.newBitmapText method which is fairly close to that provided by Corona for newText, as close as I can get. 
 --		
 --		However this still uses BitmapString methods, so you cannot assign to x,y,anchorX,anchorY,xScale,yScale etc. At present anyway.
+--
+--		Bear in mind that what is returned by this is not a Corona DisplayObject and cannot be used like one.  To access the viewGroup use the getView()
+--		method. Clear up using the strings remove() method , not using removeSelf() or relying on it being removed if it is part of a group.
 --
 --- ************************************************************************************************************************************************************************
 
@@ -1062,7 +1071,13 @@ display.hiddenBitmapStringPrototype = BitmapString 												-- we make sure t
 
 return { BitmapString = BitmapString, FontManager = FontManager, Modifiers = Modifiers } 		-- hand it back to the caller so it can use it.
 
--- setTintBrackets()
--- tinting for predefined, numerical and off.
-
+-- removeSelf() option ? (2 x remove())
+-- display.remove()
+-- composer.removeScene() coding.
 -- multiline text justification (?)
+
+--	Changes 
+--	=======
+--	16-May-14 				Do not update if the view Group has been set to invisible.
+-- 							removeSelf() method added , same as remove()
+--							Removing twice doesn't cause an error.
