@@ -97,7 +97,8 @@ end
 function DisplayScene:preOpen()
 	self.text = {} 																				-- array of three bitmap objects to create
 	self.text[1] = display.newBitmapText("This is text",display.contentWidth/2,display.contentHeight/4,"font1",64)
-	self.text[2] = display.newBitmapText("This is text",display.contentWidth/2,display.contentHeight/2,"font3",64):setScale(0.5,1)
+	self.text[2] = display.newBitmapText("This is text",display.contentWidth/2,display.contentHeight/2,"font3",48)
+	self.text[2].xScale = 0.7
 	self.text[3] = display.newBitmapText("This is text",display.contentWidth/2,display.contentHeight*3/4,"font2",64)
 
 	for i = 1,3 do 																				-- iterate through all three
